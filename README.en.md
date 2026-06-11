@@ -58,6 +58,242 @@ The heuristic is 3D Euclidean distance, which guides the search toward the goal.
 
 Theta* extends A* with Line-of-Sight checks. If a parent node can directly see a neighbor, Theta* attempts a shortcut, often producing smoother paths in open spaces.
 
+## Algorithm Pseudocode
+
+The following pseudocode follows the actual implementation in `src/algorithms/`. All three algorithms use a min-priority queue to retrieve the node with the lowest priority, and a `closed` set to prevent nodes from being expanded more than once.
+
+### Shared Function: Neighbor Generation
+
+The 6-direction mode permits movement along exactly one coordinate axis. The 26-direction mode also includes edge-diagonal and corner-diagonal movement. A candidate node must be inside the grid and must not be an obstacle.
+
+```txt
+FUNCTION GetNeighbors(current, gridSize, obstacles, movementMode)
+    neighbors <- empty list
+
+    FOR dx FROM -1 TO 1
+        FOR dy FROM -1 TO 1
+            FOR dz FROM -1 TO 1
+                IF dx = 0 AND dy = 0 AND dz = 0
+                    CONTINUE
+
+                nonZeroAxes <- CountNonZero(dx, dy, dz)
+                IF movementMode = 6 AND nonZeroAxes != 1
+                    CONTINUE
+
+                neighbor <- (current.x + dx,
+                             current.y + dy,
+                             current.z + dz)
+
+                IF neighbor is inside grid AND neighbor is not an obstacle
+                    ADD neighbor TO neighbors
+
+    RETURN neighbors
+```
+
+Movement cost between nodes is calculated with 3D Euclidean distance:
+
+```txt
+Distance(a, b) <- SQRT(
+    (a.x - b.x)^2 +
+    (a.y - b.y)^2 +
+    (a.z - b.z)^2
+)
+```
+
+### Dijkstra Pseudocode
+
+Dijkstra uses only the accumulated distance from the start node as its priority and does not use a heuristic.
+
+```txt
+FUNCTION Dijkstra(start, goal, grid)
+    open <- empty Min-Priority Queue
+    distance[start] <- 0
+    parent <- empty map
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (start, priority = 0)
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            newDistance <- distance[current] + Distance(current, neighbor)
+
+            IF newDistance < distance[neighbor]
+                distance[neighbor] <- newDistance
+                parent[neighbor] <- current
+                ENQUEUE open WITH (neighbor, priority = newDistance)
+
+    RETURN (empty path, visited)
+```
+
+### A* Pseudocode
+
+A* uses `f(n) = g(n) + h(n)` as the priority, where `h(n)` is the 3D Euclidean distance from a node to the goal.
+
+```txt
+FUNCTION AStar(start, goal, grid)
+    open <- empty Min-Priority Queue
+    gScore[start] <- 0
+    parent <- empty map
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (
+        start,
+        priority = Distance(start, goal)
+    )
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            tentativeG <- gScore[current] + Distance(current, neighbor)
+
+            IF tentativeG < gScore[neighbor]
+                gScore[neighbor] <- tentativeG
+                parent[neighbor] <- current
+                heuristic <- Distance(neighbor, goal)
+                ENQUEUE open WITH (
+                    neighbor,
+                    priority = tentativeG + heuristic
+                )
+
+    RETURN (empty path, visited)
+```
+
+### Theta* Pseudocode
+
+Theta* retains the A* evaluation function but checks whether `parent[current]` has direct Line-of-Sight to `neighbor`. If the direct route is available and has a lower cost, Theta* skips `current` and assigns that ancestor as the neighbor's parent.
+
+```txt
+FUNCTION ThetaStar(start, goal, grid)
+    open <- empty Min-Priority Queue
+    gScore[start] <- 0
+    parent[start] <- start
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (
+        start,
+        priority = Distance(start, goal)
+    )
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            candidateParent <- current
+            candidateG <- gScore[current] + Distance(current, neighbor)
+            currentParent <- parent[current]
+
+            IF HasLineOfSight(currentParent, neighbor)
+                shortcutG <- gScore[currentParent]
+                             + Distance(currentParent, neighbor)
+
+                IF shortcutG < candidateG
+                    candidateG <- shortcutG
+                    candidateParent <- currentParent
+
+            IF candidateG < gScore[neighbor]
+                gScore[neighbor] <- candidateG
+                parent[neighbor] <- candidateParent
+                heuristic <- Distance(neighbor, goal)
+                ENQUEUE open WITH (
+                    neighbor,
+                    priority = candidateG + heuristic
+                )
+
+    RETURN (empty path, visited)
+```
+
+### Line-of-Sight Pseudocode
+
+The implementation chooses the number of samples from the largest coordinate difference between the endpoints. Each sample is rounded to a voxel coordinate. Line-of-Sight fails if any sampled voxel outside the starting point is out of bounds or blocked by an obstacle.
+
+```txt
+FUNCTION HasLineOfSight(from, to, grid)
+    dx <- ABS(to.x - from.x)
+    dy <- ABS(to.y - from.y)
+    dz <- ABS(to.z - from.z)
+    steps <- MAX(dx, dy, dz)
+
+    IF steps = 0
+        RETURN true
+
+    FOR i FROM 0 TO steps
+        t <- i / steps
+        point <- (
+            ROUND(from.x + (to.x - from.x) * t),
+            ROUND(from.y + (to.y - from.y) * t),
+            ROUND(from.z + (to.z - from.z) * t)
+        )
+
+        IF point != from AND point is not walkable
+            RETURN false
+
+    RETURN true
+```
+
+### Path Reconstruction Pseudocode
+
+```txt
+FUNCTION ReconstructPath(parent, start, goal)
+    path <- empty list
+    current <- goal
+
+    WHILE current exists
+        ADD current TO path
+        IF current = start
+            RETURN REVERSE(path)
+        current <- parent[current]
+
+    RETURN empty path
+```
+
 ## Tech Stack
 
 - React

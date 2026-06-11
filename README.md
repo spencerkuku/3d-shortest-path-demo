@@ -76,6 +76,242 @@ Theta* 是 A* 的延伸版本，加入 Line-of-Sight 檢查。當目前節點的
 
 因此 Theta* 在開闊空間中通常可以產生更平滑、較接近連續空間的路徑。
 
+## 演算法虛擬碼
+
+以下虛擬碼依照 `src/algorithms/` 中的實際實作整理。三種演算法皆使用 Min-Priority Queue；每次取出優先權最小的節點，並以 `closed` 集合避免重複展開。
+
+### 共用函式：取得相鄰節點
+
+6 方向模式只允許沿單一座標軸移動；26 方向模式則包含面、邊與角方向。候選節點必須位於地圖範圍內，且不可為障礙物。
+
+```txt
+FUNCTION GetNeighbors(current, gridSize, obstacles, movementMode)
+    neighbors <- empty list
+
+    FOR dx FROM -1 TO 1
+        FOR dy FROM -1 TO 1
+            FOR dz FROM -1 TO 1
+                IF dx = 0 AND dy = 0 AND dz = 0
+                    CONTINUE
+
+                nonZeroAxes <- CountNonZero(dx, dy, dz)
+                IF movementMode = 6 AND nonZeroAxes != 1
+                    CONTINUE
+
+                neighbor <- (current.x + dx,
+                             current.y + dy,
+                             current.z + dz)
+
+                IF neighbor is inside grid AND neighbor is not an obstacle
+                    ADD neighbor TO neighbors
+
+    RETURN neighbors
+```
+
+相鄰節點之間的移動成本使用 3D 歐幾里得距離：
+
+```txt
+Distance(a, b) <- SQRT(
+    (a.x - b.x)^2 +
+    (a.y - b.y)^2 +
+    (a.z - b.z)^2
+)
+```
+
+### Dijkstra 虛擬碼
+
+Dijkstra 的 Priority Queue 優先權只有起點到節點的累積距離 `distance`，不使用 heuristic。
+
+```txt
+FUNCTION Dijkstra(start, goal, grid)
+    open <- empty Min-Priority Queue
+    distance[start] <- 0
+    parent <- empty map
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (start, priority = 0)
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            newDistance <- distance[current] + Distance(current, neighbor)
+
+            IF newDistance < distance[neighbor]
+                distance[neighbor] <- newDistance
+                parent[neighbor] <- current
+                ENQUEUE open WITH (neighbor, priority = newDistance)
+
+    RETURN (empty path, visited)
+```
+
+### A* 虛擬碼
+
+A* 使用 `f(n) = g(n) + h(n)` 作為 Priority Queue 優先權，其中 `h(n)` 是節點到終點的 3D 歐幾里得距離。
+
+```txt
+FUNCTION AStar(start, goal, grid)
+    open <- empty Min-Priority Queue
+    gScore[start] <- 0
+    parent <- empty map
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (
+        start,
+        priority = Distance(start, goal)
+    )
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            tentativeG <- gScore[current] + Distance(current, neighbor)
+
+            IF tentativeG < gScore[neighbor]
+                gScore[neighbor] <- tentativeG
+                parent[neighbor] <- current
+                heuristic <- Distance(neighbor, goal)
+                ENQUEUE open WITH (
+                    neighbor,
+                    priority = tentativeG + heuristic
+                )
+
+    RETURN (empty path, visited)
+```
+
+### Theta* 虛擬碼
+
+Theta* 保留 A* 的評估方式，但會檢查 `parent[current]` 是否能直接看見 `neighbor`。若可直線到達且成本更低，便跳過 `current`，直接將該祖先設為 `neighbor` 的 parent。
+
+```txt
+FUNCTION ThetaStar(start, goal, grid)
+    open <- empty Min-Priority Queue
+    gScore[start] <- 0
+    parent[start] <- start
+    closed <- empty set
+    visited <- empty list
+
+    ENQUEUE open WITH (
+        start,
+        priority = Distance(start, goal)
+    )
+
+    WHILE open is not empty
+        IF task is cancelled
+            BREAK
+
+        current <- DEQUEUE node with minimum priority
+        IF current is in closed
+            CONTINUE
+
+        ADD current TO closed
+        ADD current TO visited
+
+        IF current = goal
+            RETURN (ReconstructPath(parent, start, goal), visited)
+
+        FOR EACH neighbor IN GetNeighbors(current)
+            IF neighbor is in closed
+                CONTINUE
+
+            candidateParent <- current
+            candidateG <- gScore[current] + Distance(current, neighbor)
+            currentParent <- parent[current]
+
+            IF HasLineOfSight(currentParent, neighbor)
+                shortcutG <- gScore[currentParent]
+                             + Distance(currentParent, neighbor)
+
+                IF shortcutG < candidateG
+                    candidateG <- shortcutG
+                    candidateParent <- currentParent
+
+            IF candidateG < gScore[neighbor]
+                gScore[neighbor] <- candidateG
+                parent[neighbor] <- candidateParent
+                heuristic <- Distance(neighbor, goal)
+                ENQUEUE open WITH (
+                    neighbor,
+                    priority = candidateG + heuristic
+                )
+
+    RETURN (empty path, visited)
+```
+
+### Line-of-Sight 虛擬碼
+
+本專案的 Line-of-Sight 會在兩點間依最大座標差決定取樣次數，對每個取樣位置四捨五入成 Voxel 座標；只要其中一點超出地圖或碰到障礙物，就判定無法直視。
+
+```txt
+FUNCTION HasLineOfSight(from, to, grid)
+    dx <- ABS(to.x - from.x)
+    dy <- ABS(to.y - from.y)
+    dz <- ABS(to.z - from.z)
+    steps <- MAX(dx, dy, dz)
+
+    IF steps = 0
+        RETURN true
+
+    FOR i FROM 0 TO steps
+        t <- i / steps
+        point <- (
+            ROUND(from.x + (to.x - from.x) * t),
+            ROUND(from.y + (to.y - from.y) * t),
+            ROUND(from.z + (to.z - from.z) * t)
+        )
+
+        IF point != from AND point is not walkable
+            RETURN false
+
+    RETURN true
+```
+
+### 路徑回溯虛擬碼
+
+```txt
+FUNCTION ReconstructPath(parent, start, goal)
+    path <- empty list
+    current <- goal
+
+    WHILE current exists
+        ADD current TO path
+        IF current = start
+            RETURN REVERSE(path)
+        current <- parent[current]
+
+    RETURN empty path
+```
+
 ## 比較指標
 
 每次演算法執行後會顯示：
